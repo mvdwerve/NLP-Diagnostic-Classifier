@@ -37,6 +37,8 @@ with open('ted_dict_words_pos.txt') as f:
                     pos_tags[tagged_word[1]] = len(pos_tags)
                 pos_dict[tagged_word[0]] = tagged_word[1]
 
+print(pos_tags)
+
 def get_pos_tag(index):
     return [k for (k, v) in list(pos_tags.items()) if v == index]
 
@@ -60,16 +62,20 @@ class Net(nn.Module):
         self.fc2 = nn.Linear(500, 45)
 
     def forward(self, x):
-        x = F.selu(self.fc1(x))
+        x = F.relu(self.fc1(x))
         x = self.fc2(x)
         return F.softmax(x)
 
 # net = torch.load('diagnostic-classifier.pt', map_location=lambda storage, loc: storage)
 
 class Trainer:
-    def __init__(self, model, dictionary):
+    def __init__(self, model, dictionary, pt=None):
         # initialize vars for training the net
-        self.net = Net()
+        if pt == None:
+            self.net = Net()
+        else:
+            self.net = torch.load('diagnostic-classifier.pt', map_location=lambda storage, loc: storage)
+
         self.optimizer =  optim.SGD(self.net.parameters(), lr=args.lr, momentum=args.momentum)
         self.loss = nn.CrossEntropyLoss()
        
@@ -89,10 +95,10 @@ class Trainer:
     # NB Assumes the sentence is already tokenised!
     def tokenise(self, sentence):
         words = sentence.split(' ')
-        assert len(words) <= max_seq_len, "Sentence too long"
+        # assert len(words) <= max_seq_len, "Sentence too long"
         return torch.LongTensor([self.get_id(w) for w in words])
     
-    def evaluate(self, sentences, targets):
+    def evaluate(self, sentences, targets, train=True):
         # storing the output here
         outputs, hiddens = [], []
 
@@ -105,24 +111,30 @@ class Trainer:
             # Run the model, compute probabilities by applying softmax
             output, hidden = self.model(input_data, self.hidden)
 
-            # the prediction in the hidden layer
-            prediction = self.net(hidden[0])[1]
-            target_id = pos_tags.get(pos_dict.get(target))
-            
-            # append to the output and hiddens (faux batching)
-            outputs.append(output)
-            hiddens.append(hidden)
-    
-            # some user output
-            print('%s => %s' % (sentence, target))
-            if target_id == None:
-                print(" ---> skipped last sentence, because target \"%s\"not in dictionary" % target)
-                continue
+            if train:
+                # We need to train our model on the hidden state of the RNN
+                hidden_state = hidden[0]
+                # print('Prediction:', self.net.forward(hidden_state).cpu()[1].data.numpy())
+                prediction = self.net.forward(hidden_state)[1]
+                target_id = pos_tags.get(pos_dict.get(target))
 
-            # make the loss and optimizer step
-            loss = self.loss(prediction, Variable(torch.LongTensor([target_id])))
-            loss.backward()
-            self.optimizer.step()
+                # append to the output and hiddens (faux batching)
+                outputs.append(output)
+                hiddens.append(hidden)
+
+                # some user output
+                print('%s => %s --> %s' % (sentence, target, pos_dict.get(target)))
+                if target_id == None:
+                    print(" ---> skipped last sentence, because target \"%s\"not in dictionary" % target)
+                    continue
+
+                # make the loss and optimizer step
+                loss = self.loss(prediction, Variable(torch.LongTensor([target_id])))
+                loss.backward()
+                self.optimizer.step()
+            else:
+                outputs.append(output)
+                hiddens.append(hidden)
         
         # return the output
         return outputs, hiddens
@@ -133,6 +145,7 @@ def plot_tensor(tensors, indices):
     plt.show()
 
 # create a trainer and set batch size
+# trainer = Trainer(lm, dictionary, pt='diagnostic-classifier.pt')
 trainer = Trainer(lm, dictionary)
 
 # loop over the batches
@@ -141,14 +154,25 @@ for i in range(0, len(sentences), args.batch_size):
     outputs, hiddens = trainer.evaluate(sentences[i:i+args.batch_size], target_words[i:i+args.batch_size])
 
 # save our own neural net
-torch.save(net, 'diagnostic-classifier.pt')
+torch.save(trainer.net, 'diagnostic-classifier.pt')
 
 print('Evaluating diagnostic classifier...')
+print(trainer.net)
 
-for i in range(0, len(sentences), batch_size):
-    _, hiddens = trainer.evaluate(sentences[i:i+args.batch_size], target_words[i:i+args.batch_size])
-    prediction = trainer.net(trainer.hidden[0]).data.numpy().tolist()[0]
-    print('Word to predict:', target_words[index])
-    print('Training sentence:', sentence)
-    print('Predicted POS tag:', get_pos_tag(prediction[0].index(max(prediction[0]))))
-    print('-------------------------')
+
+# for i in range(0, len(sentences), args.batch_size):
+#     _, hiddens = trainer.evaluate(sentences[i:i+args.batch_size], target_words[i:i+args.batch_size], train=False)
+#
+#     for j, hidden_input in enumerate(hiddens):
+#         prediction = list(trainer.net.forward(hidden_input[0]).data.numpy()[1][0])
+#         print('Word to predict:', target_words[i + j], 'Predicted:', get_pos_tag(prediction.index(max(prediction))), 'Actual:', pos_dict.get(target_words[i + j]))
+#     print('-------------------------')
+    # print(prediction)
+    # logits = output[-1, :]
+    # sm = F.softmax(logits).view(trainer.ntokens)
+    # print(output)
+    # print(sm)
+    # print('Word to predict:', target_words[i])
+    # print('Training sentence:', sentences[i])
+    # print('Predicted POS tag:', get_pos_tag(prediction.index(max(prediction))))
+    # print('-------------------------')
