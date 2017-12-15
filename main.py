@@ -20,7 +20,7 @@ args = parser.parse_args()
 
 # make the dictionaries, tags and words
 pos_dict = {}
-pos_tags = {}
+pos_tags = {'NN': 0, 'NNS': 1}
 sentences = []
 target_words = []
 
@@ -33,8 +33,8 @@ with open('ted_dict_words_pos.txt') as f:
         for word in words:
             tagged_word = word.split('/')
             if len(tagged_word) > 1:
-                if pos_tags.get(tagged_word[1]) == None:
-                    pos_tags[tagged_word[1]] = len(pos_tags)
+                # if pos_tags.get(tagged_word[1]) == None:
+                #     pos_tags[tagged_word[1]] = len(pos_tags)
                 pos_dict[tagged_word[0]] = tagged_word[1]
 
 print(pos_tags)
@@ -46,7 +46,7 @@ with open('ted_lm/to_run/data/train.txt') as f:
     content = f.readlines()
 
     for line in content:
-        if len(line.split(' ')) > 2:
+        if len(line.split(' ')) > 2 and pos_dict.get(line.split(' ')[-2]) in ['NN', 'NNS']:
             sentences.append(' '.join(line.split(' ')[:-2]))
             target_words.append(line.split(' ')[-2])
 
@@ -59,12 +59,12 @@ class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
         self.fc1 = nn.Linear(1500, 500)
-        self.fc2 = nn.Linear(500, 45)
+        self.fc2 = nn.Linear(500, 2)
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
+        x = F.selu(self.fc1(x))
         x = self.fc2(x)
-        return F.softmax(x)
+        return x
 
 # net = torch.load('diagnostic-classifier.pt', map_location=lambda storage, loc: storage)
 
@@ -113,7 +113,7 @@ class Trainer:
 
             if train:
                 # We need to train our model on the hidden state of the RNN
-                hidden_state = hidden[0]
+                hidden_state = Variable(hidden[0].data, requires_grad=False)
                 # print('Prediction:', self.net.forward(hidden_state).cpu()[1].data.numpy())
                 prediction = self.net.forward(hidden_state)[1]
                 target_id = pos_tags.get(pos_dict.get(target))
@@ -148,9 +148,11 @@ def plot_tensor(tensors, indices):
 # trainer = Trainer(lm, dictionary, pt='diagnostic-classifier.pt')
 trainer = Trainer(lm, dictionary)
 
+print(sentences)
+
 # loop over the batches
-for i in range(0, len(sentences), args.batch_size):
-    print(i + 1, '/', len(sentences))
+for i in range(0, len(sentences[:2000]), args.batch_size):
+    print(i + 1, '/', len(sentences[:2000]))
     outputs, hiddens = trainer.evaluate(sentences[i:i+args.batch_size], target_words[i:i+args.batch_size])
 
 # save our own neural net
@@ -159,20 +161,15 @@ torch.save(trainer.net, 'diagnostic-classifier.pt')
 print('Evaluating diagnostic classifier...')
 print(trainer.net)
 
+counter_correct = 0
+for i in range(2000, len(sentences), args.batch_size):
+    _, hiddens = trainer.evaluate(sentences[i:i+args.batch_size], target_words[i:i+args.batch_size], train=False)
+    hidden_states = list(zip(*hiddens))[0]
+    for j, hidden_state in enumerate(hidden_states):
+        prediction = list(trainer.net.forward(hidden_state).data.numpy()[1][0])
+        pred = get_pos_tag(prediction.index(max(prediction)))[0] == pos_dict.get(target_words[i + j])
+        if pred:
+            counter_correct += 1
 
-# for i in range(0, len(sentences), args.batch_size):
-#     _, hiddens = trainer.evaluate(sentences[i:i+args.batch_size], target_words[i:i+args.batch_size], train=False)
-#
-#     for j, hidden_input in enumerate(hiddens):
-#         prediction = list(trainer.net.forward(hidden_input[0]).data.numpy()[1][0])
-#         print('Word to predict:', target_words[i + j], 'Predicted:', get_pos_tag(prediction.index(max(prediction))), 'Actual:', pos_dict.get(target_words[i + j]))
-#     print('-------------------------')
-    # print(prediction)
-    # logits = output[-1, :]
-    # sm = F.softmax(logits).view(trainer.ntokens)
-    # print(output)
-    # print(sm)
-    # print('Word to predict:', target_words[i])
-    # print('Training sentence:', sentences[i])
-    # print('Predicted POS tag:', get_pos_tag(prediction.index(max(prediction))))
-    # print('-------------------------')
+        print('Word to predict:', target_words[i + j], 'Predicted:', get_pos_tag(prediction.index(max(prediction))), 'Actual:', pos_dict.get(target_words[i + j]))
+    print('-----------', 100 * counter_correct / (i - 2000 + args.batch_size), '%------------')
